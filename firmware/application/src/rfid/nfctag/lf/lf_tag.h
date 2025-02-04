@@ -5,6 +5,11 @@
 #include "rfid_main.h"
 #include "tag_emulation.h"
 
+#include "nrf_drv_timer.h"
+
+extern volatile bool m_is_lf_emulating;
+extern const nrfx_timer_t m_lf_tag_timer
+extern nrfx_timer_config_t m_lf_tag_timer_cfg;
 
 /**
  * Low -frequency analog card adjustment Manchester signal

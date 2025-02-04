@@ -8,8 +8,6 @@
 #include "bsp_delay.h"
 
 #include "nrf_gpio.h"
-#include "nrf_drv_timer.h"
-#include "nrf_drv_lpcomp.h"
 
 #define NRF_LOG_MODULE_NAME tag_em410x
 #include "nrf_log.h"
@@ -36,10 +34,6 @@ static uint8_t m_bit_send_position;
 static bool m_is_send_first_edge;
 // The current broadcast ID number is 33ms every few times, and can be broadcast about 30 times a second
 static uint8_t m_send_id_count;
-// Whether it is currently in the low -frequency card number of broadcasting
-static volatile bool m_is_lf_emulating = false;
-// The timer of the delivery card number, we use the timer 3
-const nrfx_timer_t m_timer_send_id = NRFX_TIMER_INSTANCE(3);
 // Cache label type
 static tag_specific_type_t m_tag_type = TAG_TYPE_UNDEFINED;
 
@@ -230,12 +224,12 @@ void timer_ce_handler(nrf_timer_event_t event_type, void *p_context) {
             if ((! mod) &&
                     (m_bit_send_position + 1 >= LF_125KHZ_EM410X_BIT_SIZE) &&
                     (m_send_id_count + 1 >= LF_125KHZ_BROADCAST_MAX)) {
-                nrfx_timer_disable(&m_timer_send_id);                       // Close the timer of the broadcast venue
+                nrfx_timer_disable(&m_lf_tag_timer);                       // Close the timer of the broadcast venue
                 // We don't need any events, but only need to detect the state of the field
                 NRF_LPCOMP->INTENCLR = LPCOMP_INTENCLR_CROSS_Msk | LPCOMP_INTENCLR_UP_Msk | LPCOMP_INTENCLR_DOWN_Msk | LPCOMP_INTENCLR_READY_Msk;
                 if (lf_is_field_exists()) {
                     nrf_drv_lpcomp_disable();
-                    nrfx_timer_enable(&m_timer_send_id);                    // Open the timer of the broadcaster and continue to simulate
+                    nrfx_timer_enable(&m_lf_tag_timer);                    // Open the timer of the broadcaster and continue to simulate
                 } else {
                     // Open the incident interruption, so that the next event can be in and out normally
                     g_is_tag_emulating = false;                             // Reset the flag in the simulation
@@ -268,44 +262,6 @@ void timer_ce_handler(nrf_timer_event_t event_type, void *p_context) {
     }
 }
 
-/**
- * @brief LPCOMP event handler is called when LPCOMP detects voltage drop.
- *
- * This function is called from interrupt context so it is very important
- * to return quickly. Don't put busy loops or any other CPU intensive actions here.
- * It is also not allowed to call soft device functions from it (if LPCOMP IRQ
- * priority is set to APP_IRQ_PRIORITY_HIGH).
- */
-static void lpcomp_event_handler(nrf_lpcomp_event_t event) {
-    // Only when the low -frequency simulation is not launched, and the analog card is started
-    if (!m_is_lf_emulating && event == NRF_LPCOMP_EVENT_UP) {
-        // Turn off dormant delay
-        sleep_timer_stop();
-        // Close the comparator
-        nrf_drv_lpcomp_disable();
-
-        // Set the simulation status logo bit
-        m_is_lf_emulating = true;
-        g_is_tag_emulating = true;
-
-        // Simulation card status should be turned off the USB light effect
-        g_usb_led_marquee_enable = false;
-
-        // LED status update
-        set_slot_light_color(RGB_BLUE);
-        TAG_FIELD_LED_ON()
-
-        //In any case, every time the state finds changes, you need to reset the BIT location of the sending
-        m_send_id_count = 0;
-        m_bit_send_position = 0;
-        m_is_send_first_edge = true;
-
-        // openThePreciseHardwareTimerToTheBroadcastCardNumber
-        nrfx_timer_enable(&m_timer_send_id);
-
-        NRF_LOG_INFO("LF FIELD DETECTED");
-    }
-}
 
 /** @brief EM410X load data
  * @param type     Refined label type

@@ -63,9 +63,9 @@ typedef enum {
     // EM4x05/4x69
     // EM4x50/4x70
     // Hitag series
-    TAG_TYPE_HITAG = 410
-    TAG_TYPE_HITAGS = 411
-    TAG_TYPE_HITAG2 = 412
+    TAG_TYPE_HITAG = 430,
+    TAG_TYPE_HITAGS,
+    TAG_TYPE_HITAG2,
 
     //////////// HF ////////////
 

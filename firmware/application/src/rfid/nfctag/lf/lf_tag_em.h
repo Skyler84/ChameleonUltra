@@ -9,7 +9,7 @@
  * The definition of the packaging tool macro only needs to be modulated 0 and 1
  */
 #define LF_125KHZ_EM410X_BIT_SIZE   64
-#define LF_125KHZ_EM410X_BIT_CLOCK  256
+#define LF_125KHZ_EM410X_BIT_CLOCK  256 /*uS (3906.25Hz)*/
 #define LF_EM410X_TAG_ID_SIZE       5
 
 
