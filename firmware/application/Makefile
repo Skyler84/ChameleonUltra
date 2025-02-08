@@ -20,8 +20,10 @@ SRC_FILES += \
   $(PROJ_DIR)/bsp/bsp_wdt.c \
   $(PROJ_DIR)/rfid/crc_utils.c \
   $(PROJ_DIR)/rfid/hex_utils.c \
+  $(PROJ_DIR)/rfid/data_utils.c \
   $(PROJ_DIR)/rfid/mf1_crapto1.c \
   $(PROJ_DIR)/rfid/mf1_crypto1.c \
+  $(PROJ_DIR)/rfid/encoding.c \
   $(PROJ_DIR)/rfid/parity.c \
   $(PROJ_DIR)/rfid/nfctag/tag_emulation.c \
   $(PROJ_DIR)/rfid/nfctag/tag_persistence.c \
@@ -30,6 +32,8 @@ SRC_FILES += \
   $(PROJ_DIR)/rfid/nfctag/hf/nfc_mf1.c \
   $(PROJ_DIR)/rfid/nfctag/hf/nfc_mf0_ntag.c \
   $(PROJ_DIR)/rfid/nfctag/lf/lf_tag_em.c \
+  $(PROJ_DIR)/rfid/nfctag/lf/lf_tag_hitag.c \
+  $(PROJ_DIR)/rfid/nfctag/lf/lf_tag.c \
   $(PROJ_DIR)/utils/dataframe.c \
   $(PROJ_DIR)/utils/delayed_reset.c \
   $(PROJ_DIR)/utils/fds_util.c \
@@ -329,7 +333,6 @@ ifeq	(${CURRENT_DEVICE_TYPE}, ${CHAMELEON_ULTRA})
   SRC_FILES +=\
     $(PROJ_DIR)/rfid/reader/hf/mf1_toolbox.c \
     $(PROJ_DIR)/rfid/reader/hf/rc522.c \
-    $(PROJ_DIR)/rfid/reader/lf/data_utils.c \
     $(PROJ_DIR)/rfid/reader/lf/lf_125khz_radio.c \
     $(PROJ_DIR)/rfid/reader/lf/lf_em410x_data.c \
     $(PROJ_DIR)/rfid/reader/lf/lf_reader_data.c \

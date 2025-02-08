@@ -7,6 +7,7 @@
 #include "lf_reader_data.h"
 #include "lf_em410x_data.h"
 #include "lf_125khz_radio.h"
+#include "encoding.h"
 
 #define NRF_LOG_MODULE_NAME em410x
 #include "nrf_log.h"
@@ -22,63 +23,6 @@ uint8_t cardbufbyte[CARD_BUF_BYTES_SIZE];   //Card data
 #ifdef debug410x
 uint8_t datatest[256] = { 0x00 };
 #endif
-
-
-//Process card data, enter raw Buffer's starting position 2 position (21111 ...)
-//After processing the card data, put cardbuf, return 5 normal analysis
-//pdata is rawbuffer
-uint8_t mcst(RAWBUF_TYPE_S *Pdata) {
-    uint8_t sync = 1;      //After the current interval process is processed, is it on the judgment line
-    uint8_t cardindex = 0; //Record change number
-    for (int i = Pdata->startbit; i < RAW_BUF_SIZE * 8; i++) {
-        uint8_t thisbit = readbit(Pdata->rawa, Pdata->rawb, i);
-        switch (sync) {
-            case 1: //Synchronous state
-                switch (thisbit) {
-                    case 0: //TheSynchronousState1T,Add1Digit0,StillSynchronize
-                        writebit(Pdata->hexbuf, Pdata->hexbuf, cardindex, 0);
-                        cardindex++;
-                        break;
-                    case 1: // Synchronous status 1.5T, add 1 digit 1, switch to non -synchronized state
-                        writebit(Pdata->hexbuf, Pdata->hexbuf, cardindex, 1);
-                        cardindex++;
-                        sync = 0;
-                        break;
-                    case 2: //Synchronous2T,Add2Digits10,StillSynchronize
-                        writebit(Pdata->hexbuf, Pdata->hexbuf, cardindex, 1);
-                        cardindex++;
-                        writebit(Pdata->hexbuf, Pdata->hexbuf, cardindex, 0);
-                        cardindex++;
-                        break;
-                    default:
-                        return 0;
-                }
-                break;
-            case 0: //Non -synchronous state
-                switch (thisbit) {
-                    case 0: //1TInNonSynchronousState,Add1Digit1,StillNonSynchronous
-                        writebit(Pdata->hexbuf, Pdata->hexbuf, cardindex, 1);
-                        cardindex++;
-                        break;
-                    case 1: // In non -synchronous status 1.5T, add 2 digits 10, switch to the synchronous state
-                        writebit(Pdata->hexbuf, Pdata->hexbuf, cardindex, 1);
-                        cardindex++;
-                        writebit(Pdata->hexbuf, Pdata->hexbuf, cardindex, 0);
-                        cardindex++;
-                        sync = 1;
-                        break;
-                    case 2: //The2TOfTheNonSynchronousState,ItIsImpossibleToOccur,ReportAnError
-                        return 0;
-                    default:
-                        return 0;
-                }
-                break;
-        }
-        if (cardindex >= CARD_BUF_SIZE * 8)
-            break;
-    }
-    return 1;
-}
 
 //Process card, find school inspection and determine whether it is normal
 uint8_t em410x_decoder(uint8_t *pData, uint8_t size, uint8_t *pOut) {
@@ -279,13 +223,13 @@ uint8_t em410x_acquire(void) {
             NRF_LOG_INFO("///time data\r\n");
         }
 #endif
-        //Looking for goals 0 1111 1111
+        //Looking for goals 0 1111 1111 (1x0101010101010101)
         carddata.startbit = 255;
         for (int i = 0; i < (RAW_BUF_SIZE * 8) - 8; i++) {
-            if (readbit(carddata.rawa, carddata.rawb, i) == 1) {
+            if (bitplane_readbits(i, 2, carddata.rawa, carddata.rawb) == 1) {
                 carddata.startbit = 0;
                 for (int j = 1; j < 8; j++) {
-                    carddata.startbit += (uint8_t)readbit(carddata.rawa, carddata.rawb, i + j);
+                    carddata.startbit += bitplane_readbits(i+j, 2, carddata.rawa, carddata.rawb);
                 }
                 if (carddata.startbit == 0) {
                     carddata.startbit = i;
@@ -299,7 +243,7 @@ uint8_t em410x_acquire(void) {
         if (carddata.startbit != 255 && carddata.startbit < (RAW_BUF_SIZE * 8) - 64) {
             //Guarantee card data can be fully analyzed
             //NRF_LOG_INFO("do mac,start: %d\r\n",startbit);
-            if (mcst(&carddata) == 1) {
+            if (manchester_decode(&carddata) == 1) {
                 //Card normal analysis
 #ifdef debug410x
                 {
@@ -335,15 +279,36 @@ void GPIO_INT0_callback(void) {
     if (thistimelen > 47) {
         static uint8_t cons_temp = 0;
         if (dataindex < RAW_BUF_SIZE * 8) {
-            if (48 <= thistimelen && thistimelen <= 80) {
-                cons_temp = 0;
-            } else if (80 <= thistimelen && thistimelen <= 112) {
-                cons_temp = 1;
-            } else if (112 <= thistimelen && thistimelen <= 144) {
-                cons_temp = 2;
+            if (48 <= thistimelen && thistimelen <= 80) { // 64/125KHz = 512us 
+                cons_temp = 0; 
+                // xx0101xx - no indication of data clock phase
+                // xx1010xx - no indication of data clock phase
+            } else if (80 <= thistimelen && thistimelen <= 112) { // 96/125KHz = 768us 
+                cons_temp = 1; 
+                // xx_01_10_1x or x0_10_01_xx - partial data clock phase indication?
+                // xx_10_01_0x or x1_01_10_xx - partial data clock phase indication?
+            } else if (112 <= thistimelen && thistimelen <= 144) { // 128/125KHz = 1024us 
+                cons_temp = 2; // xx_01_10_01_xx - definitive data clock phase indication x01x
             } else {
-                cons_temp = 3;
+                cons_temp = 3; // x01x...01xx - no indication of data clock phase
             }
+            /**
+             * y : partial 1 (never happens here!)
+             * z : partial 0 (1x or x0)
+             * 0 : x1_1x or z0_z
+             * 1 : x1_0z or z0_1x
+             * 2 : x1_01x
+             * 
+             * 0->0 : x1_11_1x or z0_00_z
+             * 0->1 : x1_11_0z or z0_00_1x
+             * 0->2 : x1_11_01x or z0_01_01x
+             * 1->0 : x1_00_z or z0_11_1x
+             * 1->1 : x1_00_1x or z0_11_0z
+             * 1->2 : z0_11_01x
+             * 2->0 : x1_01_1x
+             * 2->1 : x1_01_0z
+             * 2->2 : x1_01_01x
+             */
             writebit(carddata.rawa, carddata.rawb, dataindex, cons_temp);
 #ifdef debug410x
             datatest[dataindex] = thistimelen;

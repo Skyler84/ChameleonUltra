@@ -1,5 +1,6 @@
 #include "data_utils.h"
 #include <ctype.h>
+#include <stdarg.h>
 
 //Write2BitDataToRaw,DataBStores0Bit,DataaStores1Bit
 void writebit(uint8_t *dataa, uint8_t *datab, uint8_t pos, uint8_t adata) {
@@ -14,6 +15,26 @@ void writebit(uint8_t *dataa, uint8_t *datab, uint8_t pos, uint8_t adata) {
     getbit(adata, 0) ? setbit(datab[aimbyte], aimbit) : clrbit(datab[aimbyte], aimbit);
 }
 
+void bitplane_writebits(uint8_t pos, uint8_t data, uint8_t nbits, ...) {
+    va_list args;
+
+    if (data >= (1 << nbits)) {
+        return;
+    }
+
+    va_start(args, nbits);
+    
+    static uint8_t aimbyte = 0;
+    static uint8_t aimbit = 0;
+    aimbyte = pos / 8;
+    aimbit = pos % 8;
+    for (uint8_t i = 0; i < nbits; i++) {
+        uint8_t *bitplane = va_arg(args, uint8_t *);
+        getbit(data, nbits - i - 1) ? setbit(bitplane[aimbyte], aimbit) : clrbit(bitplane[aimbyte], aimbit);
+    }
+    va_end(args);
+}
+
 //OutputRaw's2BitCombinationData
 uint8_t readbit(uint8_t *dataa, uint8_t *datab, uint8_t pos) {
     static uint8_t aimbyte = 0;
@@ -23,6 +44,23 @@ uint8_t readbit(uint8_t *dataa, uint8_t *datab, uint8_t pos) {
     return (
                (getbit(dataa[aimbyte], aimbit) << 1) |
                (getbit(datab[aimbyte], aimbit)));
+}
+
+uint8_t bitplane_readbits(uint8_t pos, uint8_t nbits, ...) {
+    va_list args;
+    va_start(args, nbits);
+
+    static uint8_t aimbyte = 0;
+    static uint8_t aimbit = 0;
+    aimbyte = pos / 8;
+    aimbit = pos % 8;
+    uint8_t data = 0;
+    for (uint8_t i = 0; i < nbits; i++) {
+        uint8_t *bitplane = va_arg(args, uint8_t *);
+        data |= (getbit(bitplane[aimbyte], aimbit) << (nbits - i - 1));
+    }
+    va_end(args);
+    return data;
 }
 
 // Write 2bit data to RAW (large -end method, 1st place for each Byte's 8th position), datab deposit 0bit, dataa save 1bit 1bit

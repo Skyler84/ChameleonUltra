@@ -1,7 +1,25 @@
-#include "lf_tag.h"
+#include <stdint.h>
 
+#include "lf_tag.h"
+#include "syssleep.h"
+#include "tag_emulation.h"
+#include "fds_util.h"
+#include "tag_persistence.h"
+#include "bsp_delay.h"
+
+#include "nrf_gpio.h"
+#include "nrf_drv_timer.h"
 #include "nrf_drv_lpcomp.h"
 
+#define NRF_LOG_MODULE_NAME tag
+#include "nrf_log.h"
+#include "nrf_log_ctrl.h"
+#include "nrf_log_default_backends.h"
+NRF_LOG_MODULE_REGISTER();
+
+
+// Whether the USB light effect is allowed to enable
+extern bool g_usb_led_marquee_enable;
 
 // Whether it is currently in the low -frequency card number of broadcasting
 volatile bool m_is_lf_emulating = false;
@@ -9,6 +27,8 @@ volatile bool m_is_lf_emulating = false;
 const nrfx_timer_t m_lf_tag_timer = NRFX_TIMER_INSTANCE(3);
 // Config for the emulation timer
 nrfx_timer_config_t m_lf_tag_timer_cfg = NRFX_TIMER_DEFAULT_CONFIG;
+// Config for tag handlers
+tag_lf_handler_t m_tag_lf_handler;
 
 /**
 * @brief Judgment field status
@@ -48,13 +68,17 @@ static void lpcomp_event_handler(nrf_lpcomp_event_t event) {
         set_slot_light_color(RGB_BLUE);
         TAG_FIELD_LED_ON()
 
+        if (m_tag_lf_handler.field_up) {
+            m_tag_lf_handler.field_up();
+        }
+
         //In any case, every time the state finds changes, you need to reset the BIT location of the sending
-        m_send_id_count = 0;
-        m_bit_send_position = 0;
-        m_is_send_first_edge = true;
+        // m_send_id_count = 0;
+        // m_bit_send_position = 0;
+        // m_is_send_first_edge = true;
 
         // openThePreciseHardwareTimerToTheBroadcastCardNumber
-        nrfx_timer_enable(&m_lf_tag_timer);
+        // nrfx_timer_enable(&m_lf_tag_timer);
 
         NRF_LOG_INFO("LF FIELD DETECTED");
     }
@@ -72,11 +96,9 @@ static void lf_sense_enable(void) {
     err_code = nrf_drv_lpcomp_init(&config, lpcomp_event_handler);
     APP_ERROR_CHECK(err_code);
 
-    // TAG id broadcast
-    nrfx_timer_config_t timer_cfg = NRFX_TIMER_DEFAULT_CONFIG;
-    err_code = nrfx_timer_init(&m_lf_tag_timer, &timer_cfg, timer_ce_handler);
-    APP_ERROR_CHECK(err_code);
-    nrfx_timer_extended_compare(&m_lf_tag_timer, NRF_TIMER_CC_CHANNEL2, nrfx_timer_us_to_ticks(&m_lf_tag_timer, LF_125KHZ_EM410X_BIT_CLOCK), NRF_TIMER_SHORT_COMPARE2_CLEAR_MASK, true);
+    if (m_tag_lf_handler.sense_enabled) {
+        m_tag_lf_handler.sense_enabled(true);
+    }
 
     if (lf_is_field_exists() && !m_is_lf_emulating) {
         lpcomp_event_handler(NRF_LPCOMP_EVENT_UP);
@@ -87,6 +109,15 @@ static void lf_sense_disable(void) {
     nrfx_timer_uninit(&m_lf_tag_timer);    //counterInitializationTimer
     nrfx_lpcomp_uninit();                   //antiInitializationComparator
     m_is_lf_emulating = false;              //setAsNonSimulatedState
+}
+
+void lf_tag_config_clear() {
+    // m_tag_lf_config.reader_talks_first = false;
+    // m_tag_lf_config.field_up_handler = NULL;
+}
+
+void lf_tag_set_handler(tag_lf_handler_t *handler) {
+    memcpy(&m_tag_lf_handler, handler, sizeof(tag_lf_handler_t));
 }
 
 static enum  {

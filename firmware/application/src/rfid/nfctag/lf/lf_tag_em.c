@@ -6,8 +6,11 @@
 #include "fds_util.h"
 #include "tag_persistence.h"
 #include "bsp_delay.h"
+#include "data_utils.h"
+#include "encoding.h"
 
 #include "nrf_gpio.h"
+#include "nrf_drv_lpcomp.h"
 
 #define NRF_LOG_MODULE_NAME tag_em410x
 #include "nrf_log.h"
@@ -16,27 +19,16 @@
 NRF_LOG_MODULE_REGISTER();
 
 
-// Get the specified position bit
-#define GETBIT(v, bit) ((v >> bit) & 0x01)
-// Antenna control
-#define ANT_TO_MOD()   nrf_gpio_pin_set(LF_MOD)
-#define ANT_NO_MOD()  nrf_gpio_pin_clear(LF_MOD)
-
-
-// Whether the USB light effect is allowed to enable
-extern bool g_usb_led_marquee_enable;
-
 // Bit data carrying 64 -bit ID number
 static uint64_t m_id_bit_data = 0;
-// The bit position of the card ID currently sent
-static uint8_t m_bit_send_position;
-// Whether to send the first edge
-static bool m_is_send_first_edge;
 // The current broadcast ID number is 33ms every few times, and can be broadcast about 30 times a second
 static uint8_t m_send_id_count;
 // Cache label type
 static tag_specific_type_t m_tag_type = TAG_TYPE_UNDEFINED;
+// Manchester encoder state
+static manchester_encoder_t encoder;
 
+    
 /**
  * @brief Convert the card number of EM410X to the memory layout of U64 and calculate the puppet school inspection
  *  According to the instructions of the manual, EM4100 is sufficient to accommodate U64
@@ -190,76 +182,72 @@ uint64_t em410x_id_to_memory64(uint8_t id[5]) {
     return memory.u64;
 }
 
-void timer_ce_handler(nrf_timer_event_t event_type, void *p_context) {
-    bool mod;
-    switch (event_type) {
-        // Because we are configured using the CC channel 2, the event recovers
-        // Detect nrf_timer_event_compare0 event in the function
-        case NRF_TIMER_EVENT_COMPARE2: {
-            if (m_is_send_first_edge) {
-                if (GETBIT(m_id_bit_data, m_bit_send_position)) {
-                    // The first edge of the send 1
-                    ANT_TO_MOD();
-                    mod = true;
-                } else {
-                    // The first edge of the send 0
-                    ANT_NO_MOD();
-                    mod = false;
-                }
-                m_is_send_first_edge = false;   //The second edge is sent next time
-            } else {
-                if (GETBIT(m_id_bit_data, m_bit_send_position)) {
-                    // Send the second edge of 1
-                    ANT_NO_MOD();
-                    mod = false;
-                } else {
-                    //The second edge of the send 0
-                    ANT_TO_MOD();
-                    mod = true;
-                }
-                m_is_send_first_edge = true;    //The first edge of the next sends next time
-            }
-
-            // measure field only during no-mod half of last bit of last broadcast
-            if ((! mod) &&
-                    (m_bit_send_position + 1 >= LF_125KHZ_EM410X_BIT_SIZE) &&
-                    (m_send_id_count + 1 >= LF_125KHZ_BROADCAST_MAX)) {
-                nrfx_timer_disable(&m_lf_tag_timer);                       // Close the timer of the broadcast venue
-                // We don't need any events, but only need to detect the state of the field
-                NRF_LPCOMP->INTENCLR = LPCOMP_INTENCLR_CROSS_Msk | LPCOMP_INTENCLR_UP_Msk | LPCOMP_INTENCLR_DOWN_Msk | LPCOMP_INTENCLR_READY_Msk;
-                if (lf_is_field_exists()) {
-                    nrf_drv_lpcomp_disable();
-                    nrfx_timer_enable(&m_lf_tag_timer);                    // Open the timer of the broadcaster and continue to simulate
-                } else {
-                    // Open the incident interruption, so that the next event can be in and out normally
-                    g_is_tag_emulating = false;                             // Reset the flag in the simulation
-                    m_is_lf_emulating = false;
-                    TAG_FIELD_LED_OFF()                                     // Make sure the indicator light of the LF field status
-                    NRF_LPCOMP->INTENSET = LPCOMP_INTENCLR_CROSS_Msk | LPCOMP_INTENCLR_UP_Msk | LPCOMP_INTENCLR_DOWN_Msk | LPCOMP_INTENCLR_READY_Msk;
-                    // call sleep_timer_start *after* unsetting g_is_tag_emulating
-                    sleep_timer_start(SLEEP_DELAY_MS_FIELD_125KHZ_LOST);    // Start the timer to enter the sleep
-                    NRF_LOG_INFO("LF FIELD LOST");
-                }
-            }
-
-            if (m_is_send_first_edge == true) { // The first edge of the next sends next time
-                if (++m_bit_send_position >= LF_125KHZ_EM410X_BIT_SIZE) {
-                    m_bit_send_position = 0;    // The broadcast is successful once, and the BIT position is zero
-                    if(!lf_is_field_exists()){  // To avoid stopping sending when the reader field is present
-                        m_send_id_count++;
-                    }
-                    if (m_send_id_count >= LF_125KHZ_BROADCAST_MAX) {
-                        m_send_id_count = 0;                                        //The number of broadcasts reaches the upper limit, re -identifies the status of the field and re -statistically count the number of broadcast times
-                    }
-                }
-            }
-            break;
-        }
-        default: {
-            // Nothing to do.
-            break;
-        }
+/**
+ * @brief Modulate single bit of data, manchester encoded.
+ * @return 0: data remaining
+ *        1: data finished
+ */
+uint8_t manchester_encoder_txbit(manchester_encoder_t *enc) {
+    bool bit = bitplane_readbits(enc->bitpos, 1, enc->data_bits);
+    bool mod = bit ^ enc->clk_phase ^ enc->inverted;
+    if (mod) {
+        ANT_TO_MOD();
+    } else {
+        ANT_NO_MOD();
     }
+    enc->clk_phase = !enc->clk_phase;
+    if (enc->clk_phase == false) {
+        enc->bitpos++;
+    } else if (enc->bitpos == enc->num_bits) {
+        return 1;
+    }
+    return 0;
+}
+
+void timer_ce_handler(nrf_timer_event_t event_type, void *p_context) {
+    if (event_type != NRF_TIMER_EVENT_COMPARE2) {
+        return;
+    }
+
+    if (manchester_encoder_txbit(&encoder) == 0) {
+        return;
+    }
+    encoder.bitpos = 0;
+    m_send_id_count++;
+    if (m_send_id_count < LF_125KHZ_BROADCAST_MAX) {
+        return;
+    }        
+    nrfx_timer_disable(&m_lf_tag_timer);                       // Close the timer of the broadcast venue
+    // We don't need any events, but only need to detect the state of the field
+    NRF_LPCOMP->INTENCLR = LPCOMP_INTENCLR_CROSS_Msk | LPCOMP_INTENCLR_UP_Msk | LPCOMP_INTENCLR_DOWN_Msk | LPCOMP_INTENCLR_READY_Msk;
+    if (lf_is_field_exists()) {
+        nrf_drv_lpcomp_disable();
+        nrfx_timer_enable(&m_lf_tag_timer);                    // Open the timer of the broadcaster and continue to simulate
+    } else {
+        // Open the incident interruption, so that the next event can be in and out normally
+        g_is_tag_emulating = false;                             // Reset the flag in the simulation
+        m_is_lf_emulating = false;
+        TAG_FIELD_LED_OFF()                                     // Make sure the indicator light of the LF field status
+        NRF_LPCOMP->INTENSET = LPCOMP_INTENCLR_CROSS_Msk | LPCOMP_INTENCLR_UP_Msk | LPCOMP_INTENCLR_DOWN_Msk | LPCOMP_INTENCLR_READY_Msk;
+        // call sleep_timer_start *after* unsetting g_is_tag_emulating
+        sleep_timer_start(SLEEP_DELAY_MS_FIELD_125KHZ_LOST);    // Start the timer to enter the sleep
+        NRF_LOG_INFO("LF FIELD LOST");
+    }
+}
+
+static void em41_field_up_handler(void) {
+    // Open the timer of the broadcast card number
+    nrfx_timer_enable(&m_lf_tag_timer);
+}
+
+static void em41_sense_enabled_handler(bool enabled) {
+    if (!enabled) return;
+    ret_code_t err_code;
+    // TAG id broadcast
+    nrfx_timer_config_t timer_cfg = NRFX_TIMER_DEFAULT_CONFIG;
+    err_code = nrfx_timer_init(&m_lf_tag_timer, &timer_cfg, timer_ce_handler);
+    APP_ERROR_CHECK(err_code);
+    nrfx_timer_extended_compare(&m_lf_tag_timer, NRF_TIMER_CC_CHANNEL2, nrfx_timer_us_to_ticks(&m_lf_tag_timer, LF_125KHZ_EM410X_BIT_CLOCK), NRF_TIMER_SHORT_COMPARE2_CLEAR_MASK, true);
 }
 
 
@@ -273,6 +261,12 @@ int lf_tag_em410x_data_loadcb(tag_specific_type_t type, tag_data_buffer_t *buffe
         // The ID card number is directly converted here as the corresponding BIT data stream
         m_tag_type = type;
         m_id_bit_data = em410x_id_to_memory64(buffer->buffer);
+        manchester_encoder_init(&encoder, (uint8_t *)&m_id_bit_data, 64, false);
+        tag_lf_handler_t handler = {
+            .sense_enabled = em41_sense_enabled_handler,
+            .field_up = em41_field_up_handler,
+        };
+        lf_tag_set_handler(&handler);
         NRF_LOG_INFO("LF Em410x data load finish.");
     } else {
         NRF_LOG_ERROR("LF_EM410X_TAG_ID_SIZE too big.");

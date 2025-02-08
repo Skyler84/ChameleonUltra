@@ -12,13 +12,15 @@ extern "C" {
   uint8_t (*(WATCH))[(LENG)] = (uint8_t (*)[(LENG)])(PDATA)
 #define DEBUG_READ_BREAK(WATCH)  (*(WATCH))[0] = (*(WATCH))[0]
 
-#define setbit(x,y)         (x|=(1<<y))
-#define clrbit(x,y)         (x&=~(1<<y))
-#define reversebit(x,y)     (x^=(1<<y))
-#define getbit(x,y)         ((x) >> (y)&1)
+#define setbit(x,y)         ((x)  |= (1<<(y)))
+#define clrbit(x,y)         ((x)  &=~(1<<(y)))
+#define reversebit(x,y)     ((x)  ^= (1<<(y)))
+#define getbit(x,y)         (((x) >> (y))&1)
 
 void writebit(uint8_t *dataa, uint8_t *datab, uint8_t pos, uint8_t adata);
+void bitplane_writebits(uint8_t pos, uint8_t data, uint8_t nbits, ...);
 uint8_t readbit(uint8_t *dataa, uint8_t *datab, uint8_t pos);
+uint8_t bitplane_readbits(uint8_t pos, uint8_t nbits, ...);
 void writebit_msb(uint8_t *dataa, uint8_t *datab, uint8_t pos, uint8_t adata);
 uint8_t readbit_msb(uint8_t *dataa, uint8_t *datab, uint8_t pos);
 uint8_t invert_num(uint8_t num);
